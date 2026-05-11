@@ -72,25 +72,25 @@ export circuit mint(                                             // 2
 }
 
 export circuit transfer(                                         // 3
-    from: Bytes<32>,
-    to: Bytes<32>,
+    sender: Bytes<32>,
+    recipient2: Bytes<32>,
     amount: Uint<64>,
     newFromBalance: Uint<64>,
     newToBalance: Uint<64>
 ): [] {
-    assert(balances.member(disclose(from)), "Sender has no balance");
-    const fromCurrent = balances.lookup(disclose(from));
+    assert(balances.member(disclose(sender)), "Sender has no balance");
+    const fromCurrent = balances.lookup(disclose(sender));
     assert(fromCurrent >= disclose(amount), "Insufficient balance");
     assert(disclose(newFromBalance) == fromCurrent - disclose(amount), "Invalid sender balance");
-    if (!balances.member(disclose(to))) {
+    if (!balances.member(disclose(recipient2))) {
         assert(disclose(newToBalance) == disclose(amount), "First receive: balance must equal amount");
     } else {
-        const toCurrent = balances.lookup(disclose(to));
+        const toCurrent = balances.lookup(disclose(recipient2));
         assert(disclose(newToBalance) > toCurrent, "Recipient balance must increase");
         assert(disclose(newToBalance) - toCurrent == disclose(amount), "Invalid recipient balance");
     }
-    balances.insert(disclose(from), disclose(newFromBalance));
-    balances.insert(disclose(to), disclose(newToBalance));
+    balances.insert(disclose(sender), disclose(newFromBalance));
+    balances.insert(disclose(recipient2), disclose(newToBalance));
 }
 
 export circuit burn(userKey: Bytes<32>, amount: Uint<64>): [] {  // 4
