@@ -1,0 +1,89 @@
+// governance.compact
+// Governance operations in a separate contract from token logic.
+// 4 exported circuits — well under Lace's 13-circuit limit.
+//
+// Deployed independently from token.compact.
+// TypeScript coordinates: check token balance off-chain before calling vote().
+// This contract only tracks proposals and vote counts — it has no knowledge
+// of token holdings. Cross-contract validation happens in the TypeScript layer.
+
+pragma language_version >= 0.20;
+import CompactStandardLibrary;
+
+// ─── State ──────────────────────────────────────────────────────────────────
+
+export ledger admin: Bytes<32>;
+export ledger proposals: Map<Bytes<32>, Boolean>;
+export ledger voteCounts: Map<Bytes<32>, Uint<64>>;
+export ledger hasVoted: Map<Bytes<32>, Boolean>;
+export ledger proposalCount: Counter;
+
+// ─── Witnesses ──────────────────────────────────────────────────────────────
+
+witness getAdminSecret(): Bytes<32>;
+
+// ─── Non-exported helpers ────────────────────────────────────────────────────
+
+circuit adminKey(): Bytes<32> {
+    return persistentHash<Vector<2, Bytes<32>>>([
+        pad(32, "governance:admin:v1"),
+        getAdminSecret()
+    ]);
+}
+
+circuit requireAdmin(): [] {
+    assert(disclose(adminKey()) == admin, "Admin only");
+}
+
+// Derive a composite key from proposalId + userKey to track per-user votes.
+// Uses persistentHash so the mapping is collision-resistant.
+// Not exported — doesn't count toward circuit limit.
+circuit voteKey(proposalId: Bytes<32>, userKey: Bytes<32>): Bytes<32> {
+    return persistentHash<Vector<2, Bytes<32>>>([proposalId, userKey]);
+}
+
+// ─── Exported circuits ───────────────────────────────────────────────────────
+
+export circuit initialize(adminPubkey: Bytes<32>): [] {          // 1
+    admin = disclose(adminPubkey);
+}
+
+// Create a new proposal. Only admin can create proposals.
+export circuit createProposal(proposalId: Bytes<32>): [] {       // 2
+    requireAdmin();
+    assert(!proposals.member(disclose(proposalId)), "Proposal already exists");
+    proposals.insert(disclose(proposalId), disclose(true));
+    proposalCount.increment(1);
+}
+
+// Cast a vote on a proposal.
+// newVoteCount is the updated total, computed off-chain and verified here.
+// The voteKey helper prevents the same (proposalId, userKey) pair from voting twice.
+export circuit vote(                                             // 3
+    proposalId: Bytes<32>,
+    userKey: Bytes<32>,
+    newVoteCount: Uint<64>
+): [] {
+    assert(proposals.member(disclose(proposalId)), "Proposal does not exist");
+
+    const key = voteKey(disclose(proposalId), disclose(userKey));
+    assert(!hasVoted.member(key), "Already voted on this proposal");
+
+    if (voteCounts.member(disclose(proposalId))) {
+        const current = voteCounts.lookup(disclose(proposalId));
+        assert(disclose(newVoteCount) > current, "Vote count must increase");
+    }
+
+    hasVoted.insert(key, disclose(true));
+    voteCounts.insert(disclose(proposalId), disclose(newVoteCount));
+}
+
+// Read the vote count for a proposal.
+export circuit voteCountOf(proposalId: Bytes<32>): Uint<64> {   // 4
+    if (!voteCounts.member(disclose(proposalId))) {
+        return 0;
+    }
+    return voteCounts.lookup(disclose(proposalId));
+}
+
+// Total exported circuits: 4 / 13 maximum.

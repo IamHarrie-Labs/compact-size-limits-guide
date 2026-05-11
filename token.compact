@@ -1,0 +1,113 @@
+// token.compact
+// Token operations split into their own contract.
+// 5 exported circuits — well under Lace's 13-circuit limit.
+//
+// Split from monolithic.compact by domain:
+//   token.compact     → mint, transfer, burn, balance queries
+//   governance.compact → proposals, voting
+//
+// TypeScript coordinates calls across both contracts.
+// Each can be deployed and upgraded independently.
+
+pragma language_version >= 0.20;
+import CompactStandardLibrary;
+
+// ─── State ──────────────────────────────────────────────────────────────────
+
+export ledger admin: Bytes<32>;
+export ledger balances: Map<Bytes<32>, Uint<64>>;
+export ledger totalMinted: Counter;
+
+// ─── Witnesses ──────────────────────────────────────────────────────────────
+
+witness getAdminSecret(): Bytes<32>;
+
+// ─── Non-exported helpers ────────────────────────────────────────────────────
+// These do NOT count toward the 13-circuit limit.
+// Factor repeated logic here to keep exported circuits lean.
+
+circuit adminKey(): Bytes<32> {
+    return persistentHash<Vector<2, Bytes<32>>>([
+        pad(32, "token:admin:v1"),
+        getAdminSecret()
+    ]);
+}
+
+circuit requireAdmin(): [] {
+    assert(disclose(adminKey()) == admin, "Admin only");
+}
+
+circuit requireMember(userKey: Bytes<32>): [] {
+    assert(balances.member(userKey), "User has no balance");
+}
+
+// ─── Exported circuits ───────────────────────────────────────────────────────
+
+export circuit initialize(adminPubkey: Bytes<32>): [] {          // 1
+    admin = disclose(adminPubkey);
+}
+
+// Mint tokens to a recipient.
+// newBalance is computed off-chain to avoid Uint<64> arithmetic widening.
+export circuit mint(                                             // 2
+    recipient: Bytes<32>,
+    amount: Uint<64>,
+    newBalance: Uint<64>
+): [] {
+    requireAdmin();
+    if (!balances.member(disclose(recipient))) {
+        assert(disclose(newBalance) == disclose(amount), "First mint: balance must equal amount");
+    } else {
+        const current = balances.lookup(disclose(recipient));
+        assert(disclose(newBalance) > current, "Balance must increase");
+        assert(disclose(newBalance) - current == disclose(amount), "Invalid mint amount");
+    }
+    balances.insert(disclose(recipient), disclose(newBalance));
+    totalMinted.increment(1);
+}
+
+// Transfer tokens between two addresses.
+// Both new balances are computed off-chain and verified in-circuit.
+export circuit transfer(                                         // 3
+    from: Bytes<32>,
+    to: Bytes<32>,
+    amount: Uint<64>,
+    newFromBalance: Uint<64>,
+    newToBalance: Uint<64>
+): [] {
+    assert(balances.member(disclose(from)), "Sender has no balance");
+    const fromCurrent = balances.lookup(disclose(from));
+    assert(fromCurrent >= disclose(amount), "Insufficient balance");
+    // Safe subtraction: fromCurrent >= amount (verified above)
+    assert(disclose(newFromBalance) == fromCurrent - disclose(amount), "Invalid sender balance");
+
+    if (!balances.member(disclose(to))) {
+        assert(disclose(newToBalance) == disclose(amount), "First receive: balance must equal amount");
+    } else {
+        const toCurrent = balances.lookup(disclose(to));
+        assert(disclose(newToBalance) > toCurrent, "Recipient balance must increase");
+        assert(disclose(newToBalance) - toCurrent == disclose(amount), "Invalid recipient balance");
+    }
+
+    balances.insert(disclose(from), disclose(newFromBalance));
+    balances.insert(disclose(to), disclose(newToBalance));
+}
+
+// Burn tokens from a holder's balance.
+export circuit burn(userKey: Bytes<32>, amount: Uint<64>): [] {  // 4
+    assert(balances.member(disclose(userKey)), "No balance to burn");
+    const current = balances.lookup(disclose(userKey));
+    assert(current >= disclose(amount), "Insufficient balance");
+    // Safe subtraction: current >= amount (verified above)
+    balances.insert(disclose(userKey), current - disclose(amount));
+}
+
+// Read a token holder's balance.
+export circuit balanceOf(userKey: Bytes<32>): Uint<64> {         // 5
+    if (!balances.member(disclose(userKey))) {
+        return 0;
+    }
+    return balances.lookup(disclose(userKey));
+}
+
+// Total exported circuits: 5 / 13 maximum.
